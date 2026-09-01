@@ -22,22 +22,42 @@ class PluginBaseConfig(PluginConfigBase):
     """插件基础配置"""
 
     __ui_label__ = "插件基础设置"
+    __ui_icon__ = "settings"
 
-    config_version: str = Field(default="1.0.0", description="配置版本号")
-    enabled: bool = Field(default=True, description="是否启用插件")
+    config_version: str = Field(
+        default="1.0.0",
+        description="配置版本号",
+        json_schema_extra={"label": "配置版本", "disabled": True},
+    )
+    enabled: bool = Field(
+        default=True,
+        description="是否启用插件",
+        json_schema_extra={"label": "启用插件"},
+    )
 
 
 class SearchConfig(PluginConfigBase):
     """搜索设置"""
 
     __ui_label__ = "搜索设置"
+    __ui_icon__ = "search"
 
     tavily_api_key: list[str] = Field(
         default_factory=list,
         description="Tavily API Key（可添加多个 Key 进行轮询）",
+        json_schema_extra={
+            "label": "Tavily API Key",
+            "hint": "可添加多个 Key 轮询；请求失败（401/403/429）时自动切换到下一个 Key",
+            "placeholder": "tvly-xxxxxxxxxxxxxxx",
+        },
     )
     show_source: bool = Field(
-        default=True, description="是否在搜索结果中显示来源引用"
+        default=True,
+        description="是否在搜索结果中显示来源引用",
+        json_schema_extra={
+            "label": "显示来源引用",
+            "hint": "开启后，每条搜索结果会附上 [来源] URL",
+        },
     )
 
 
