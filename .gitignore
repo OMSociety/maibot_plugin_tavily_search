@@ -1,0 +1,12 @@
+# 运行时生成的插件配置（Runner 自动创建，勿提交）
+/config.toml
+
+# Python 缓存与测试产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 编辑器
+.vscode/
+.idea/

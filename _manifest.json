@@ -1,0 +1,42 @@
+{
+  "manifest_version": 2,
+  "id": "omsociety.tavily-search",
+  "version": "1.0.0",
+  "name": "Tavily 网页搜索",
+  "description": "提供 tavily_search LLM 工具，调用 Tavily API 搜索网页，支持多 Key 轮询与来源引用显示",
+  "author": {
+    "name": "OMSociety",
+    "url": "https://github.com/OMSociety"
+  },
+  "license": "AGPL-3.0",
+  "urls": {
+    "repository": "https://github.com/OMSociety/maibot_plugin_tavily_search"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "aiohttp",
+      "version_spec": ">=3.8.0"
+    }
+  ],
+  "plugin_type": "tool",
+  "display": {
+    "icon": {
+      "type": "local",
+      "value": "logo.png",
+      "fallback": "package"
+    }
+  },
+  "capabilities": [],
+  "i18n": {
+    "default_locale": "zh-CN"
+  }
+}
