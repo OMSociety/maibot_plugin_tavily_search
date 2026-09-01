@@ -22,7 +22,6 @@ class PluginBaseConfig(PluginConfigBase):
     """插件基础配置"""
 
     __ui_label__ = "插件基础设置"
-    __ui_icon__ = "settings"
 
     config_version: str = Field(
         default="1.0.0",
@@ -40,14 +39,13 @@ class SearchConfig(PluginConfigBase):
     """搜索设置"""
 
     __ui_label__ = "搜索设置"
-    __ui_icon__ = "search"
 
     tavily_api_key: list[str] = Field(
         default_factory=list,
         description="Tavily API Key（可添加多个 Key 进行轮询）",
         json_schema_extra={
             "label": "Tavily API Key",
-            "hint": "可添加多个 Key 轮询；请求失败（401/403/429）时自动切换到下一个 Key",
+            "hint": "可添加多个 Key 轮询",
             "placeholder": "tvly-xxxxxxxxxxxxxxx",
         },
     )
