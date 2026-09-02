@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+
 from tavily_client import TavilyClient, TavilySearchError, format_results
 
 

@@ -67,40 +67,41 @@ class TavilyClient:
         }
 
         last_error: TavilySearchError | None = None
-        for _ in range(len(self._keys)):
-            key = await self._next_key()
-            headers = {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            }
-            try:
-                async with (
-                    aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session,
-                    session.post(_SEARCH_URL, json=payload, headers=headers) as response,
-                ):
-                    if response.status == 200:
-                        data = await response.json()
-                        return [
-                            {
-                                "title": str(item.get("title") or ""),
-                                "url": str(item.get("url") or ""),
-                                "content": str(item.get("content") or ""),
-                            }
-                            for item in data.get("results", [])
-                        ]
-                    reason = await response.text()
-                    if response.status in _RETRYABLE_STATUSES:
-                        last_error = TavilySearchError(
+        # 一次 search() 调用复用一个 session，多 Key 重试也复用同一连接池。
+        async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
+            for _ in range(len(self._keys)):
+                key = await self._next_key()
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                }
+                try:
+                    async with session.post(
+                        _SEARCH_URL, json=payload, headers=headers
+                    ) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            return [
+                                {
+                                    "title": str(item.get("title") or ""),
+                                    "url": str(item.get("url") or ""),
+                                    "content": str(item.get("content") or ""),
+                                }
+                                for item in data.get("results", [])
+                            ]
+                        reason = await response.text()
+                        if response.status in _RETRYABLE_STATUSES:
+                            last_error = TavilySearchError(
+                                f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
+                            )
+                            continue
+                        raise TavilySearchError(
                             f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
                         )
-                        continue
-                    raise TavilySearchError(
-                        f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
-                    )
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                # 网络异常 / 超时按「当前 Key 不可用」处理，换下一个 Key 重试。
-                last_error = TavilySearchError(f"Tavily 请求失败（网络异常或超时）：{exc}")
-                continue
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    # 网络异常 / 超时按「当前 Key 不可用」处理，换下一个 Key 重试。
+                    last_error = TavilySearchError(f"Tavily 请求失败（网络异常或超时）：{exc}")
+                    continue
 
         if last_error is not None:
             raise last_error
