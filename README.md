@@ -52,8 +52,6 @@
 git clone https://github.com/OMSociety/maibot_plugin_tavily_search.git plugins/maibot_plugin_tavily_search
 ```
 
-> 💡 插件依赖（aiohttp）在 `_manifest.json` 中声明，MaiBot 启动时会自动安装。
-
 ### 第二步：配置 Tavily API Key（必需）
 
 > 💡 不配置 Key 时工具会返回友好提示，不会报错崩溃。
