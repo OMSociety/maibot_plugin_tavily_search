@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import aiohttp
 
@@ -16,6 +17,43 @@ _SEARCH_URL = "https://api.tavily.com/search"
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({401, 403, 429, 432})
 # 单次请求总超时（含连接、发送、读取响应体）。Tavily 无响应时避免请求无限挂起。
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
+# 抽取到的错误说明最大长度：只给 LLM 侧足够短的稳定信息，避免把原始响应体堆进上下文。
+_MAX_ERROR_DETAIL = 120
+# 无法从响应体取到字段时的固定兜底文案（不包含原始响应体内容）。
+_ERROR_HINT_FALLBACK = "请求失败（响应体无法解析）"
+
+
+async def _extract_error_detail(response: aiohttp.ClientResponse) -> str:
+    """从非 200 响应里取一个简短、稳定的错误说明。
+
+    Tavily 的原始响应体可能很长、含 HTML 或不可控内容，直接截断塞回上下文会污染
+    LLM 侧信息。策略：优先取 JSON 响应里的 ``detail`` / ``error`` / ``message``
+    短字段（截断到 ``_MAX_ERROR_DETAIL``）；取不到时回退为固定文案，只保留稳定的
+    HTTP 错误码。
+    """
+    try:
+        text = await response.text()
+    except (aiohttp.ClientError, UnicodeDecodeError):
+        return _ERROR_HINT_FALLBACK
+    if not text:
+        return "空响应体"
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return _ERROR_HINT_FALLBACK
+    if not isinstance(data, dict):
+        return "请求失败（响应格式异常）"
+    for key in ("detail", "error", "message"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:_MAX_ERROR_DETAIL]
+    error_obj = data.get("error")
+    if isinstance(error_obj, dict):
+        for key in ("message", "detail", "type"):
+            value = error_obj.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:_MAX_ERROR_DETAIL]
+    return "请求失败"
 
 
 class TavilySearchError(Exception):
@@ -89,14 +127,14 @@ class TavilyClient:
                                 }
                                 for item in data.get("results", [])
                             ]
-                        reason = await response.text()
+                        reason = await _extract_error_detail(response)
                         if response.status in _RETRYABLE_STATUSES:
                             last_error = TavilySearchError(
-                                f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
+                                f"Tavily 搜索失败（HTTP {response.status}）：{reason}"
                             )
                             continue
                         raise TavilySearchError(
-                            f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
+                            f"Tavily 搜索失败（HTTP {response.status}）：{reason}"
                         )
                 except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                     # 网络异常 / 超时按「当前 Key 不可用」处理，换下一个 Key 重试。

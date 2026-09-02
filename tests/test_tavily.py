@@ -1,11 +1,16 @@
 """tavily_client 单元测试：结果格式化 + Key 轮询/容错（mock 网络）。"""
 
 import asyncio
+import json
 from unittest.mock import patch
 
 import pytest
-
-from tavily_client import TavilyClient, TavilySearchError, format_results
+from tavily_client import (
+    TavilyClient,
+    TavilySearchError,
+    _extract_error_detail,
+    format_results,
+)
 
 
 def test_format_results_with_source():
@@ -105,11 +110,45 @@ def test_search_fails_fast_on_500():
     client = TavilyClient(["k1", "k2"])
     with (
         patch("tavily_client.aiohttp.ClientSession", return_value=session),
-        pytest.raises(TavilySearchError, match="HTTP 500"),
+        pytest.raises(TavilySearchError) as exc_info,
     ):
         asyncio.run(client.search("q"))
     # 非重试错误不换 Key
     assert session.calls == ["Bearer k1"]
+    # 原始响应体（"err body"）不进入给 LLM 的错误信息，只保留稳定的 HTTP 错误码
+    assert "err body" not in str(exc_info.value)
+    assert "HTTP 500" in str(exc_info.value)
+
+
+class _FakeTextResp:
+    """只返回指定文本的假响应，用于测试错误说明抽取。"""
+
+    def __init__(self, text: str):
+        self._text = text
+
+    async def text(self):
+        return self._text
+
+
+def test_error_detail_prefers_short_json_field():
+    resp = _FakeTextResp(json.dumps({"detail": "Invalid API key"}))
+    assert asyncio.run(_extract_error_detail(resp)) == "Invalid API key"
+
+
+def test_error_detail_nested_error_message():
+    resp = _FakeTextResp(json.dumps({"error": {"message": "limit exceeded"}}))
+    assert asyncio.run(_extract_error_detail(resp)) == "limit exceeded"
+
+
+def test_error_detail_truncates_long_field():
+    long_detail = "x" * 500
+    resp = _FakeTextResp(json.dumps({"detail": long_detail}))
+    assert len(asyncio.run(_extract_error_detail(resp))) <= 120
+
+
+def test_error_detail_non_json_falls_back():
+    resp = _FakeTextResp("plain text body")
+    assert asyncio.run(_extract_error_detail(resp)) == "请求失败（响应体无法解析）"
 
 
 def test_search_failover_on_timeout():
