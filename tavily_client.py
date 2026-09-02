@@ -14,6 +14,8 @@ _SEARCH_URL = "https://api.tavily.com/search"
 # 这些 HTTP 状态码表示「当前 Key 有问题」，应换下一个 Key 重试。
 # 401 未授权 / 403 禁用 / 429 限流 / 432 Tavily 配额耗尽。
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({401, 403, 429, 432})
+# 单次请求总超时（含连接、发送、读取响应体）。Tavily 无响应时避免请求无限挂起。
+_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 class TavilySearchError(Exception):
@@ -71,29 +73,34 @@ class TavilyClient:
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
             }
-            async with (
-                aiohttp.ClientSession() as session,
-                session.post(_SEARCH_URL, json=payload, headers=headers) as response,
-            ):
-                if response.status == 200:
-                    data = await response.json()
-                    return [
-                        {
-                            "title": str(item.get("title") or ""),
-                            "url": str(item.get("url") or ""),
-                            "content": str(item.get("content") or ""),
-                        }
-                        for item in data.get("results", [])
-                    ]
-                reason = await response.text()
-                if response.status in _RETRYABLE_STATUSES:
-                    last_error = TavilySearchError(
+            try:
+                async with (
+                    aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session,
+                    session.post(_SEARCH_URL, json=payload, headers=headers) as response,
+                ):
+                    if response.status == 200:
+                        data = await response.json()
+                        return [
+                            {
+                                "title": str(item.get("title") or ""),
+                                "url": str(item.get("url") or ""),
+                                "content": str(item.get("content") or ""),
+                            }
+                            for item in data.get("results", [])
+                        ]
+                    reason = await response.text()
+                    if response.status in _RETRYABLE_STATUSES:
+                        last_error = TavilySearchError(
+                            f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
+                        )
+                        continue
+                    raise TavilySearchError(
                         f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
                     )
-                    continue
-                raise TavilySearchError(
-                    f"Tavily 搜索失败（HTTP {response.status}）：{reason[:200]}"
-                )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                # 网络异常 / 超时按「当前 Key 不可用」处理，换下一个 Key 重试。
+                last_error = TavilySearchError(f"Tavily 请求失败（网络异常或超时）：{exc}")
+                continue
 
         if last_error is not None:
             raise last_error

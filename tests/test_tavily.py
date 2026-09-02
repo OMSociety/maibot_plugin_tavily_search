@@ -109,3 +109,60 @@ def test_search_fails_fast_on_500():
         asyncio.run(client.search("q"))
     # 非重试错误不换 Key
     assert session.calls == ["Bearer k1"]
+
+
+def test_search_failover_on_timeout():
+    class _FlakySession:
+        """第一个 Key 超时，第二个 Key 正常返回。"""
+
+        def __init__(self):
+            self.calls: list[str] = []
+            self._posts = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def post(self, url, json=None, headers=None):
+            self.calls.append(headers.get("Authorization"))
+            self._posts += 1
+            if self._posts == 1:
+                raise asyncio.TimeoutError("simulated timeout")
+            return _FakeResponse(
+                200,
+                {"results": [{"title": "t", "url": "https://x", "content": "c"}]},
+            )
+
+    session = _FlakySession()
+    client = TavilyClient(["slow-key", "good-key"])
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        results = asyncio.run(client.search("q"))
+    assert results[0]["title"] == "t"
+    assert session.calls == ["Bearer slow-key", "Bearer good-key"]
+
+
+def test_search_all_keys_timeout_raises():
+    class _AlwaysTimeoutSession:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def post(self, url, json=None, headers=None):
+            self.calls.append(headers.get("Authorization"))
+            raise asyncio.TimeoutError("simulated timeout")
+
+    session = _AlwaysTimeoutSession()
+    client = TavilyClient(["k1", "k2"])
+    with (
+        patch("tavily_client.aiohttp.ClientSession", return_value=session),
+        pytest.raises(TavilySearchError, match="超时"),
+    ):
+        asyncio.run(client.search("q"))
+    assert session.calls == ["Bearer k1", "Bearer k2"]
