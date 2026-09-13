@@ -6,7 +6,7 @@
 
 **Tavily 网页搜索工具** —— 实时信息检索 · 多 Key 轮询 · 来源引用 · 搜索深度可控
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/OMSociety/maibot_plugin_tavily_search)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/OMSociety/maibot_plugin_tavily_search)
 [![MaiBot](https://img.shields.io/badge/MaiBot-%E2%89%A51.0-green.svg)](https://github.com/Mai-with-u/MaiBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/OMSociety/maibot_plugin_tavily_search)](https://github.com/OMSociety/maibot_plugin_tavily_search/stargazers)
