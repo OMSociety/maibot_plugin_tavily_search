@@ -5,7 +5,7 @@
 """
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from maibot_sdk import Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
@@ -22,16 +22,51 @@ class PluginBaseConfig(PluginConfigBase):
     """插件基础配置"""
 
     __ui_label__ = "插件基础设置"
+    __ui_i18n__: ClassVar[dict[str, dict[str, str]]] = {
+        "en-US": {
+            "title": "Plugin basic settings",
+            "description": "Base configuration for the plugin",
+        },
+        "ja-JP": {
+            "title": "プラグイン基本設定",
+            "description": "プラグインの基本構成",
+        },
+    }
 
     config_version: str = Field(
         default="1.0.0",
         description="配置版本号",
-        json_schema_extra={"label": "配置版本", "disabled": True},
+        json_schema_extra={
+            "label": "配置版本",
+            "disabled": True,
+            "i18n": {
+                "en-US": {
+                    "label": "Config version",
+                    "hint": "Configuration version number",
+                },
+                "ja-JP": {
+                    "label": "設定バージョン",
+                    "hint": "設定のバージョン番号",
+                },
+            },
+        },
     )
     enabled: bool = Field(
         default=True,
         description="是否启用插件",
-        json_schema_extra={"label": "启用插件"},
+        json_schema_extra={
+            "label": "启用插件",
+            "i18n": {
+                "en-US": {
+                    "label": "Enable plugin",
+                    "hint": "Whether to enable the plugin",
+                },
+                "ja-JP": {
+                    "label": "プラグインの有効化",
+                    "hint": "プラグインを有効にするかどうか",
+                },
+            },
+        },
     )
 
 
@@ -39,6 +74,16 @@ class SearchConfig(PluginConfigBase):
     """搜索设置"""
 
     __ui_label__ = "搜索设置"
+    __ui_i18n__: ClassVar[dict[str, dict[str, str]]] = {
+        "en-US": {
+            "title": "Search settings",
+            "description": "Search settings",
+        },
+        "ja-JP": {
+            "title": "検索設定",
+            "description": "検索設定",
+        },
+    }
 
     tavily_api_key: list[str] = Field(
         default_factory=list,
@@ -47,6 +92,18 @@ class SearchConfig(PluginConfigBase):
             "label": "Tavily API Key",
             "hint": "可添加多个 Key 轮询",
             "placeholder": "tvly-xxxxxxxxxxxxxxx",
+            "i18n": {
+                "en-US": {
+                    "label": "Tavily API Key",
+                    "hint": "You can add multiple Key entries for round-robin rotation",
+                    "placeholder": "tvly-xxxxxxxxxxxxxxx",
+                },
+                "ja-JP": {
+                    "label": "Tavily の API キー",
+                    "hint": "複数の Key を追加してラウンドロビンできます",
+                    "placeholder": "tvly-xxxxxxxxxxxxxxx",
+                },
+            },
         },
     )
     show_source: bool = Field(
@@ -55,6 +112,16 @@ class SearchConfig(PluginConfigBase):
         json_schema_extra={
             "label": "显示来源引用",
             "hint": "开启后，每条搜索结果会附上 [来源] URL",
+            "i18n": {
+                "en-US": {
+                    "label": "Show source citations",
+                    "hint": "When enabled, each search result is appended with a [来源] URL",
+                },
+                "ja-JP": {
+                    "label": "ソース引用の表示",
+                    "hint": "有効にすると、各検索結果に [来源] URL が付きます",
+                },
+            },
         },
     )
 
@@ -67,9 +134,7 @@ class TavilySearchConfig(PluginConfigBase):
     plugin: PluginBaseConfig = Field(
         default_factory=PluginBaseConfig, description="插件基础配置"
     )
-    search: SearchConfig = Field(
-        default_factory=SearchConfig, description="搜索设置"
-    )
+    search: SearchConfig = Field(default_factory=SearchConfig, description="搜索设置")
 
 
 # ============ 插件主类 ============
