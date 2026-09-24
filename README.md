@@ -58,10 +58,10 @@ MaiBot WebUI → 插件市场 → 搜索 `tavily`
 
 ## 配置项说明
 
-| 分组 | 配置项 | 类型 | 默认值 | 说明 |
-|:-----|:-------|:-----|:-------|:-----|
-| 搜索设置 | `tavily_api_key` | list | `[]` | Tavily API Key，可添加多个 Key 进行轮询 |
-| 搜索设置 | `show_source` | bool | `true` | 是否在搜索结果中显示来源引用（URL） |
+| 配置项 | 类型 | 默认值 | 说明 |
+|:------|:-----|:-------|:-----|
+| `tavily_api_key` | list | `[]` | Tavily API Key，可添加多个 Key 进行轮询 |
+| `show_source` | bool | `true` | 是否在搜索结果中显示来源引用（URL） |
 
 ### 快速配置模板
 
