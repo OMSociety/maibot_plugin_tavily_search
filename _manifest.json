@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "omsociety.tavily-search",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "name": "Tavily 网页搜索",
   "description": "提供 tavily_search LLM 工具，调用 Tavily API 搜索网页，支持多 Key 轮询与来源引用显示",
   "author": {

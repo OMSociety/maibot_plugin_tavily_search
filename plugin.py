@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 from maibot_sdk import Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
-from .tavily_client import TavilyClient, format_results
+from .tavily_client import TavilyClientCache, format_results
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +145,11 @@ class TavilySearchPlugin(MaiBotPlugin):
 
     config_model = TavilySearchConfig
 
+    def __init__(self) -> None:
+        super().__init__()
+        # 复用同一个客户端实例，多 Key 轮询下标才能跨调用保留（见 TavilyClientCache）
+        self._client_cache = TavilyClientCache()
+
     async def on_load(self) -> None:
         logger.info("TavilySearch 插件已加载")
 
@@ -156,6 +161,8 @@ class TavilySearchPlugin(MaiBotPlugin):
     ) -> None:
         if scope != "self":
             return
+        # Key 可能已变，丢弃缓存的客户端，下次调用按新 Key 重建
+        self._client_cache.invalidate()
 
     def _keys(self) -> list[str]:
         """返回去空白的已配置 Key 列表。"""
@@ -213,7 +220,7 @@ class TavilySearchPlugin(MaiBotPlugin):
             search_depth = "basic"
 
         try:
-            results = await TavilyClient(keys).search(
+            results = await self._client_cache.get(keys).search(
                 query=query,
                 max_results=max_results,
                 search_depth=search_depth,

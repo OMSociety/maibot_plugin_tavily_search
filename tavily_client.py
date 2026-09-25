@@ -60,6 +60,32 @@ class TavilySearchError(Exception):
     """Tavily 搜索失败。"""
 
 
+class TavilyClientCache:
+    """按 Key 列表复用 :class:`TavilyClient` 实例。
+
+    轮询下标是 ``TavilyClient`` 的**实例状态**（``self._index``）。如果每次调用都新建
+    客户端，下标永远从 0 开始，无错误时的「多 Key 轮询」会退化成永远只用第一个 Key。
+    因此调用方必须复用同一实例，仅在 Key 列表变化（或配置更新）时重建。
+    """
+
+    def __init__(self) -> None:
+        self._keys: tuple[str, ...] | None = None
+        self._client: TavilyClient | None = None
+
+    def get(self, keys: list[str]) -> TavilyClient:
+        """返回当前 Key 列表对应的客户端；列表变化时重建。"""
+        key_tuple = tuple(str(key).strip() for key in keys if str(key).strip())
+        if self._client is None or key_tuple != self._keys:
+            self._client = TavilyClient(list(key_tuple))
+            self._keys = key_tuple
+        return self._client
+
+    def invalidate(self) -> None:
+        """丢弃缓存（配置更新后调用，下次按新 Key 重建）。"""
+        self._client = None
+        self._keys = None
+
+
 class TavilyClient:
     """带多 Key 轮询与 failover 的 Tavily 搜索客户端。"""
 

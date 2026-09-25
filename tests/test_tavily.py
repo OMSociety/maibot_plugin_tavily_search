@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from tavily_client import (
     TavilyClient,
+    TavilyClientCache,
     TavilySearchError,
     _extract_error_detail,
     format_results,
@@ -206,3 +207,86 @@ def test_search_all_keys_timeout_raises():
     ):
         asyncio.run(client.search("q"))
     assert session.calls == ["Bearer k1", "Bearer k2"]
+
+
+# ── 客户端复用：多 Key 轮询必须跨调用生效 ───────────────
+
+
+def test_client_cache_reuses_instance_for_same_keys():
+    cache = TavilyClientCache()
+    assert cache.get(["k1", "k2"]) is cache.get(["k1", "k2"])
+
+
+def test_client_cache_rebuilds_on_key_change():
+    cache = TavilyClientCache()
+    first = cache.get(["k1", "k2"])
+    assert cache.get(["k1", "k3"]) is not first
+    # Key 内容（去空白后）不变就继续复用同一实例
+    third = cache.get(["k1", "k3"])
+    assert cache.get([" k1 ", " k3 "]) is third
+
+
+def test_client_cache_rebuilds_after_invalidate():
+    cache = TavilyClientCache()
+    first = cache.get(["k1", "k2"])
+    cache.invalidate()
+    assert cache.get(["k1", "k2"]) is not first
+
+
+def test_reused_client_rotates_keys_across_searches():
+    """同一个插件持有的客户端连续两次搜索，必须分别用到 k1、k2。
+
+    旧实现每次搜索都新建 TavilyClient，轮询下标每次从 0 开始 → 永远只用 keys[0]。
+    """
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                200,
+                {"results": [{"title": "a", "url": "https://a", "content": "ca"}]},
+            ),
+            _FakeResponse(
+                200,
+                {"results": [{"title": "b", "url": "https://b", "content": "cb"}]},
+            ),
+        ]
+    )
+    cache = TavilyClientCache()
+
+    async def run():
+        return (
+            await cache.get(["k1", "k2"]).search("q1"),
+            await cache.get(["k1", "k2"]).search("q2"),
+        )
+
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        first, second = asyncio.run(run())
+
+    assert session.calls == ["Bearer k1", "Bearer k2"]
+    assert first[0]["title"] == "a"
+    assert second[0]["title"] == "b"
+
+
+def test_control_new_client_per_search_restarts_rotation():
+    """对照项（非回归断言）：不复用实例时每次都从头轮询。
+
+    这条用例断言的是**旧实现的退化行为**，因此修改前后都通过；它的作用是把
+    「复用实例」与「每次新建」的差异钉成可读事实，防止后人把 `TavilyClientCache`
+    当成多余包装删掉时无从对照。真正的回归断言在
+    `test_reused_client_rotates_keys_across_searches` 与
+    `tests/test_plugin_client_reuse.py`。
+    """
+    session = _FakeSession(
+        [
+            _FakeResponse(200, {"results": []}),
+            _FakeResponse(200, {"results": []}),
+        ]
+    )
+
+    async def run():
+        await TavilyClient(["k1", "k2"]).search("q1")
+        await TavilyClient(["k1", "k2"]).search("q2")
+
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        asyncio.run(run())
+
+    assert session.calls == ["Bearer k1", "Bearer k1"]
