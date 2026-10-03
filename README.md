@@ -46,7 +46,7 @@ MaiBot WebUI → 插件市场 → 搜索 `tavily`
 
 ### 第二步：配置 Tavily API Key（必需）
 
-> **提示：**不配置 Key 时工具会返回友好提示，不会报错崩溃。
+> **提示**：不配置 Key 时工具会返回友好提示，不会报错崩溃。
 
 在插件配置的「搜索设置」分组中填写 Tavily API Key。Key 在 [Tavily 官网](https://app.tavily.com/home) 获取，可添加多个 Key 进行轮询。
 
