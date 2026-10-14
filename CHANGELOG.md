@@ -10,6 +10,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-10-15
+
+### 修复
+
+- **配置异常不再穿出工具层**：配置校验失败时，SDK 只记一条 warning 并把强类型配置实例置空，此后读取配置会抛 `RuntimeError`。此前两个工具在读取 API Key 时就撞上它，异常直接穿出工具层；现在与「未配置 Key」一并收敛成可读提示，模型与用户都能看懂该去配置页检查。
+- **URL 入参支持竖线分隔**：LLM 用 `https://a.com|https://b.com` 这种写法并列多个地址时，此前整串被当成一个地址送出去；现在竖线也作为分隔符，且仅在拆开后每段都是 http(s) 网址时才真拆，`?q=x|y` 这类 query 里的竖线不受影响。
+
+### 变更
+
+- **配置 i18n 回归测试补回一条失效分支**：`_iter_translations` 里被 `continue` 挡住的「字段无 json hint 但有 description 时，译文由 i18n.hint 承担」分支此前从不执行，`plugin.config_version` 与 `plugin.enabled` 两个字段的提示译文因此无人校验；修正后该分支恢复生效。
+- **新增 4 条回归测试**：竖线分隔、竖线误切防护、配置不可用时的可读提示、未配置 Key 的原有提示。
+
+### Fixed
+
+- **Broken configuration no longer escapes the tool layer**: when config validation fails the SDK only logs a warning and clears the strongly-typed config instance, so reading it raises `RuntimeError`. Both tools hit that while reading the API keys and the exception escaped the tool layer; it is now folded into a readable message like the "no key configured" case, so the model and the user are both told to check the config page.
+- **Pipe-separated URL input is supported**: when the LLM writes several addresses as `https://a.com|https://b.com`, the whole string used to be sent as a single address. The pipe now counts as a separator, and splitting still happens only when every part is an http(s) URL, so a pipe inside a query string such as `?q=x|y` is left intact.
+
+### Changed
+
+- **A dead branch in the config i18n regression test is restored**: the "field has a description but no json hint, so i18n.hint carries the description translation" branch of `_iter_translations` was unreachable behind a `continue`, leaving the hint translations of `plugin.config_version` and `plugin.enabled` unverified; the branch is live again.
+- **4 new regression tests** covering pipe separation, protection against splitting on a pipe inside a URL, the readable message for unavailable config, and the existing missing-key message.
+
 ## [1.2.1] - 2026-10-15
 
 ### 修复

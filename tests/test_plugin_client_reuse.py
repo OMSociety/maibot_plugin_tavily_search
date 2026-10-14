@@ -525,3 +525,57 @@ def test_normalize_urls_splits_semicolon_separated_string():
 
     assert error == ""
     assert urls == ["https://a.com", "https://b.com"]
+
+
+def test_normalize_urls_splits_pipe_separated_string():
+    """竖线也应视为分隔符（LLM 有时用它并列多个地址）。"""
+    module = _import_plugin_with_fake_sdk()
+
+    urls, error = module._normalize_urls("https://a.com|https://b.com")
+
+    assert error == ""
+    assert urls == ["https://a.com", "https://b.com"]
+
+
+def test_normalize_urls_keeps_url_with_pipe_intact():
+    """竖线出现在合法 URL 的 query 里时不能被误切。"""
+    module = _import_plugin_with_fake_sdk()
+    url = "https://a.com/search?q=x|y"
+
+    urls, error = module._normalize_urls([url])
+
+    assert error == ""
+    assert urls == [url]
+
+
+class _BrokenConfig:
+    """模拟 SDK 在配置校验失败后置空强类型配置：一访问 search 就抛。"""
+
+    @property
+    def search(self):
+        raise RuntimeError("当前插件配置尚未完成注入")
+
+
+def test_tools_report_broken_config_instead_of_raising():
+    """配置不可用时两个工具都回可读信息，而不是把 RuntimeError 抛出工具层。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = module.TavilySearchPlugin()
+    plugin.config = _BrokenConfig()
+
+    search_result = asyncio.run(plugin.handle_tavily_search(query="q1"))
+    extract_result = asyncio.run(plugin.handle_tavily_extract(urls="https://a.com"))
+
+    for result in (search_result, extract_result):
+        assert result["success"] is False
+        assert "配置不可用" in result["message"]
+
+
+def test_tools_report_missing_keys():
+    """未配置 Key 时保留原有可读提示。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, [])
+
+    result = asyncio.run(plugin.handle_tavily_extract(urls="https://a.com"))
+
+    assert result["success"] is False
+    assert "未配置 Tavily API Key" in result["message"]

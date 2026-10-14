@@ -21,16 +21,16 @@ from .tavily_client import (
 logger = logging.getLogger(__name__)
 
 # URL 里的空白与分隔符：LLM 可能传数组，也可能把多个地址塞进一个字符串。
-_URL_SPLIT_RE = re.compile(r"[,\s，、;]+")
+_URL_SPLIT_RE = re.compile(r"[,\s，、;|]+")
 _HTTP_PREFIXES = ("http://", "https://")
 
 
 def _split_candidates(value: str) -> list[str]:
     """把一个入参字符串拆成候选 URL 列表。
 
-    分隔符（逗号 / 空白 / 顿号 / 分号）在 URL 里也可能合法出现（如 query 里的逗号、
-    路径参数里的分号 ``;jsessionid=``），因此只在**拆开后每一段都是 http(s) 网址**时
-    才真拆；否则整串按单个 URL 处理，避免把合法地址切坏。
+    分隔符（逗号 / 空白 / 顿号 / 分号 / 竖线）在 URL 里也可能合法出现（如 query 里的
+    逗号与竖线、路径参数里的分号 ``;jsessionid=``），因此只在**拆开后每一段都是
+    http(s) 网址**时才真拆；否则整串按单个 URL 处理，避免把合法地址切坏。
     """
     parts = [part for part in _URL_SPLIT_RE.split(value) if part]
     if len(parts) > 1 and all(
@@ -274,6 +274,28 @@ class TavilySearchPlugin(MaiBotPlugin):
             if str(key).strip()
         ]
 
+    def _keys_or_error(self) -> tuple[list[str], str]:
+        """读取已配置的 Key，把不可用状态转成给模型看的提示。
+
+        SDK 在配置校验失败时只记一条 warning 并把强类型配置实例置空，此后
+        ``self.config`` 抛 ``RuntimeError``；这里把它与「未配置 Key」一并收敛成
+        可读信息，避免工具层抛出未处理异常。
+
+        Returns:
+            tuple[list[str], str]: ``(Key 列表, 错误信息)``；错误信息非空时列表为 ``[]``。
+        """
+        try:
+            keys = self._keys()
+        except RuntimeError as exc:
+            return [], f"插件配置不可用（{exc}），请在插件配置页检查配置后重试。"
+        if not keys:
+            return (
+                [],
+                "未配置 Tavily API Key，请在插件配置的「搜索设置」里填写"
+                "（可填多个 Key 轮询）。",
+            )
+        return keys, ""
+
     def _extract_depth(self, raw: Any) -> str:
         """归一化提取深度：只接受 basic / advanced，非法值回落到配置值。
 
@@ -334,12 +356,9 @@ class TavilySearchPlugin(MaiBotPlugin):
         ],
     )
     async def handle_tavily_search(self, query: str, **kwargs):
-        keys = self._keys()
-        if not keys:
-            return {
-                "success": False,
-                "message": "未配置 Tavily API Key，请在插件配置的「搜索设置」里填写（可填多个 Key 轮询）。",
-            }
+        keys, key_error = self._keys_or_error()
+        if key_error:
+            return {"success": False, "message": key_error}
 
         max_results = kwargs.get("max_results") or 7
         try:
@@ -351,6 +370,9 @@ class TavilySearchPlugin(MaiBotPlugin):
         search_depth = str(kwargs.get("search_depth") or "basic").strip().lower()
         if search_depth not in {"basic", "advanced"}:
             search_depth = "basic"
+
+        # 配置在 await 之前读完：此时配置可用性已确定，await 之后不再触碰配置对象。
+        show_source = self.config.search.show_source
 
         try:
             results = await self._client_cache.get(keys).search(
@@ -364,7 +386,7 @@ class TavilySearchPlugin(MaiBotPlugin):
         if not results:
             return {"success": True, "content": "Tavily 没有返回任何搜索结果。"}
 
-        content = format_results(results, self.config.search.show_source)
+        content = format_results(results, show_source)
         return {"success": True, "content": content}
 
     @Tool(
@@ -381,7 +403,7 @@ class TavilySearchPlugin(MaiBotPlugin):
                 param_type=ToolParamType.STRING,
                 description=(
                     "要抓取的网址；可传单个 URL，也可传多个 URL"
-                    f"（用逗号或换行分隔，单次最多 {MAX_EXTRACT_URLS} 个）"
+                    f"（用逗号、换行或竖线分隔，单次最多 {MAX_EXTRACT_URLS} 个）"
                 ),
                 required=True,
             ),
@@ -401,16 +423,16 @@ class TavilySearchPlugin(MaiBotPlugin):
         ],
     )
     async def handle_tavily_extract(self, urls: Any, **kwargs):
-        keys = self._keys()
-        if not keys:
-            return {
-                "success": False,
-                "message": "未配置 Tavily API Key，请在插件配置的「搜索设置」里填写（可填多个 Key 轮询）。",
-            }
+        keys, key_error = self._keys_or_error()
+        if key_error:
+            return {"success": False, "message": key_error}
 
         url_list, error = _normalize_urls(urls)
         if error:
             return {"success": False, "message": error}
+
+        # 与 Key 同理：单页上限也在 await 之前读完，之后不再触碰配置对象。
+        max_chars_per_url = self._max_chars_per_url()
 
         try:
             outcome = await self._client_cache.get(keys).extract(
@@ -424,7 +446,7 @@ class TavilySearchPlugin(MaiBotPlugin):
         content = format_extract_results(
             outcome["results"],
             outcome["failed"],
-            self._max_chars_per_url(),
+            max_chars_per_url,
         )
         return {"success": True, "content": content}
 

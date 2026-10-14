@@ -58,24 +58,19 @@ def _iter_translations(schema):
             path = f"{sec_name}.{f_name}"
             f_i18n = field.get("i18n") or {}
             for key in FIELD_KEYS:
-                if field.get(key):
-                    for loc in LOCALES:
-                        yield (
-                            path,
-                            loc,
-                            key,
-                            field[key],
-                            (f_i18n.get(loc) or {}).get(key, ""),
-                        )
-                continue
-                # 无 json hint 但有 description 时，i18n.hint 承担 description 的翻译
-            if key == "hint" and field.get("description"):
+                # 有 json hint 就用 hint；没有 hint 但字段有 description 时，
+                # 配置界面把 description 当提示文本显示，其译文由 i18n.hint 承担。
+                base_text = field.get(key)
+                if not base_text and key == "hint":
+                    base_text = field.get("description")
+                if not base_text:
+                    continue
                 for loc in LOCALES:
                     yield (
                         path,
                         loc,
                         key,
-                        field["description"],
+                        base_text,
                         (f_i18n.get(loc) or {}).get(key, ""),
                     )
 

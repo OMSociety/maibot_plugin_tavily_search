@@ -6,7 +6,7 @@
 
 **Tavily 网页搜索工具** —— 实时信息检索 · 指定网址正文提取 · 多 Key 轮询 · 来源引用 · 搜索深度可控
 
-[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)](https://github.com/OMSociety/maibot_plugin_tavily_search)
+[![Version](https://img.shields.io/badge/version-1.2.2-blue.svg)](https://github.com/OMSociety/maibot_plugin_tavily_search)
 [![MaiBot](https://img.shields.io/badge/MaiBot-%E2%89%A51.0-green.svg)](https://github.com/Mai-with-u/MaiBot)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-orange.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/OMSociety/maibot_plugin_tavily_search)](https://github.com/OMSociety/maibot_plugin_tavily_search/stargazers)
@@ -121,7 +121,7 @@ max_chars_per_url = 6000
 
 | 参数 | 类型 | 必填 | 说明 |
 |:----|:----|:----:|:-----|
-| `urls` | string | 是 | 要抓取的网址，单个或多个（逗号 / 换行 / 顿号分隔，单次最多 20 个） |
+| `urls` | string | 是 | 要抓取的网址，单个或多个（逗号 / 换行 / 顿号 / 分号 / 竖线分隔，单次最多 20 个） |
 | `query` | string | 否 | 关心的具体问题；给出后只返回最相关的片段而非整页 |
 | `extract_depth` | string | 否 | 提取深度，`basic` 或 `advanced`，默认取配置值 |
 
