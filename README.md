@@ -16,7 +16,7 @@
 
 </div>
 
-> 本项目由 AI 编写 · Tavily 搜索逻辑参考 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 内置的 `web_search_tools.py`
+> 本项目由 AI 编写
 
 ---
 
