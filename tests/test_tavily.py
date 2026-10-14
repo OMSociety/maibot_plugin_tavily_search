@@ -11,7 +11,8 @@ from tavily_client import (
     TavilyClientCache,
     TavilySearchError,
     _extract_error_detail,
-    _REQUEST_TIMEOUT,
+    _SEARCH_TIMEOUT,
+    _EXTRACT_TIMEOUT,
     format_extract_results,
     format_results,
 )
@@ -471,10 +472,110 @@ def test_max_extract_urls_matches_api_contract():
     assert MAX_EXTRACT_URLS == 20
 
 
-def test_request_timeout_exceeds_server_side_extract_cap():
-    """客户端总超时必须大于服务端 advanced 提取的 30 秒上限（官方默认值）。
+def test_extract_timeout_exceeds_server_side_extract_cap():
+    """提取端点的总超时必须大于服务端 advanced 提取的 30 秒上限（官方默认值）。
 
     两者相等即等于客户端先放弃：请求已经在服务端跑起来并计费，却拿不回内容。
     """
-    assert _REQUEST_TIMEOUT.total is not None
-    assert _REQUEST_TIMEOUT.total > 30
+    assert _EXTRACT_TIMEOUT.total is not None
+    assert _EXTRACT_TIMEOUT.total > 30
+
+
+def test_search_timeout_stays_small():
+    """搜索端点必须保持较小的超时，不能被提取端点的长超时带上。
+
+    /search 有服务端自身的快速返回预期；若与 /extract 共用 45 秒，单 Key 挂起时
+    会阻塞回复链路 45×N 秒（N 为 Key 数）。
+    """
+    assert _SEARCH_TIMEOUT.total is not None
+    assert _SEARCH_TIMEOUT.total <= 20
+    assert _SEARCH_TIMEOUT.total < _EXTRACT_TIMEOUT.total
+
+
+def test_search_timeout_is_passed_to_session():
+    """搜索必须把自己的短超时传给 session，而不是沿用提取端点的长超时。"""
+    session = _FakeSession([_FakeResponse(200, {"results": []})])
+    client = TavilyClient(["k1"])
+    with patch(
+        "tavily_client.aiohttp.ClientSession", return_value=session
+    ) as session_cls:
+        asyncio.run(client.search("q"))
+
+    assert session_cls.call_args.kwargs["timeout"] is _SEARCH_TIMEOUT
+
+
+def test_extract_timeout_is_passed_to_session():
+    """提取必须把自己的长超时传给 session，避免服务端还在跑就被客户端掐断。"""
+    session = _FakeSession([_FakeResponse(200, {"results": []})])
+    client = TavilyClient(["k1"])
+    with patch(
+        "tavily_client.aiohttp.ClientSession", return_value=session
+    ) as session_cls:
+        asyncio.run(client.extract(["https://a.com"]))
+
+    assert session_cls.call_args.kwargs["timeout"] is _EXTRACT_TIMEOUT
+
+
+def test_search_error_carries_no_duplicate_domain_prefix():
+    """网络层只抛中性细节，搜索失败的整体文案由调用方一次拼出，不出现重复前缀。"""
+    session = _FakeSession([_FakeResponse(500, {})])
+    client = TavilyClient(["k1"])
+    with (
+        patch("tavily_client.aiohttp.ClientSession", return_value=session),
+        pytest.raises(TavilySearchError) as exc_info,
+    ):
+        asyncio.run(client.search("q"))
+
+    message = str(exc_info.value)
+    assert message.startswith("HTTP 500")
+    # 领域前缀（「Tavily 搜索失败」）由调用方补；网络层再带一次就成了重复前缀。
+    assert "搜索失败" not in message
+    assert "Tavily" not in message
+
+
+def test_search_failover_on_432_quota_exhausted():
+    """432 是 Tavily 的配额耗尽码，必须换 Key 重试而不是快速失败。"""
+    session = _FakeSession(
+        [
+            _FakeResponse(432, {}),
+            _FakeResponse(200, {"results": [{"title": "t", "url": "https://x"}]}),
+        ]
+    )
+    client = TavilyClient(["exhausted-key", "good-key"])
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        results = asyncio.run(client.search("q"))
+
+    assert results[0]["title"] == "t"
+    assert session.calls == ["Bearer exhausted-key", "Bearer good-key"]
+
+
+def test_search_failover_on_403_disabled_key():
+    """403 表示当前 Key 被禁用，同样应换 Key 重试。"""
+    session = _FakeSession(
+        [
+            _FakeResponse(403, {}),
+            _FakeResponse(200, {"results": [{"title": "t", "url": "https://x"}]}),
+        ]
+    )
+    client = TavilyClient(["disabled-key", "good-key"])
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        results = asyncio.run(client.search("q"))
+
+    assert results[0]["title"] == "t"
+    assert session.calls == ["Bearer disabled-key", "Bearer good-key"]
+
+
+def test_extract_reports_server_error_reason():
+    """failed_results 里的 error 要出现在给 LLM 的文本里，模型才能区分失败原因。"""
+    text = format_extract_results(
+        [], [{"url": "https://b.com", "error": "Failed to retrieve content"}], 100
+    )
+    assert "https://b.com" in text
+    assert "Failed to retrieve content" in text
+
+
+def test_extract_failure_without_reason_has_no_empty_parens():
+    """error 为空时不留一对空括号。"""
+    text = format_extract_results([], [{"url": "https://b.com", "error": ""}], 100)
+    line = next(line for line in text.splitlines() if line.startswith("- "))
+    assert line == "- https://b.com"

@@ -10,6 +10,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-10-15
+
+### 修复
+
+- **搜索不再沿用提取端点的 45 秒超时**：两个端点分开取超时值——`/search` 用 15 秒、`/extract` 用 45 秒。此前共用的 45 秒是为深度提取放宽的，搜索路径一并被拉长，单 Key 挂起时最坏阻塞从 `15×N` 秒变成 `45×N` 秒（N 为 Key 数）。
+- **错误文案不再出现重复前缀**：网络层只抛中性细节（`HTTP 500：…`），「Tavily 搜索失败」「Tavily 网页提取失败」由各自的调用方拼一次。此前搜索失败会输出 `Tavily 搜索失败：Tavily 请求失败（HTTP 500）：…` 这类叠加前缀。
+- **提取失败原因回传给模型**：`failed_results` 里的 `error` 现在附在地址之后（此前只列 URL），模型可据此区分站点反爬 / 需登录与链接失效。
+- **数组入参里的多个地址会被正确拆分**：LLM 把多个 URL 塞进同一个数组元素（如 `["https://a.com、https://b.com"]`）时，此前整串被当作一个地址送去消耗配额；现在数组元素内部同样按分隔符拆分，元组入参也按序列处理。URL 自带的逗号（query 参数）不会被误切。
+
+### 变更
+
+- 单批 URL 上限 20 的边界补上正例：正好 20 个此前未被测试覆盖，`>` 误写成 `>=` 会静默拒绝合法请求。
+- 新增 13 条回归测试：搜索 / 提取超时分别落到 session、432 与 403 的 Key 轮询、错误文案无重复前缀、失败原因回传、URL 分割与 20 条边界。
+
+### Fixed
+
+- **Search no longer inherits the extract endpoint's 45-second timeout**: the two endpoints now carry separate timeouts — 15 seconds for `/search`, 45 seconds for `/extract`. The shared 45-second value was widened for deep extraction, which also stretched the search path; a hung key blocked the reply chain for up to `45×N` seconds (N = number of keys) instead of `15×N`.
+- **Error messages no longer repeat their prefix**: the network layer raises neutral details (`HTTP 500: …`) only, and the callers prepend "Tavily search failed" / "Tavily extraction failed" once. Search failures previously rendered as stacked prefixes such as `Tavily 搜索失败：Tavily 请求失败（HTTP 500）：…`.
+- **Extraction failure reasons reach the model**: the `error` field of `failed_results` is now appended after each URL (previously only the URL was listed), so the model can tell a blocked/login-walled page from a dead link.
+- **Multiple URLs inside one array element are split correctly**: when the LLM packs several URLs into a single array element (e.g. `["https://a.com、https://b.com"]`), the whole string used to be sent as one address and burn quota; array elements are now split on the same separators and tuple inputs are treated as sequences. Commas that are part of a valid URL (query parameters) are not split.
+
+### Changed
+
+- The 20-URL batch limit now has a positive test: an exact batch of 20 was previously uncovered, so mistyping `>` as `>=` would silently reject valid requests.
+- 13 new regression tests covering per-endpoint timeouts reaching the session, key rotation on 432 and 403, absence of duplicated error prefixes, failure-reason passthrough, URL splitting, and the 20-URL boundary.
+
 ## [1.2.0] - 2026-10-15
 
 ### 新增

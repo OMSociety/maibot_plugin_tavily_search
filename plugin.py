@@ -21,22 +21,46 @@ from .tavily_client import (
 logger = logging.getLogger(__name__)
 
 # URL 里的空白与分隔符：LLM 可能传数组，也可能把多个地址塞进一个字符串。
-_URL_SPLIT_RE = re.compile(r"[,\s，、]+")
+_URL_SPLIT_RE = re.compile(r"[,\s，、;]+")
+_HTTP_PREFIXES = ("http://", "https://")
+
+
+def _split_candidates(value: str) -> list[str]:
+    """把一个入参字符串拆成候选 URL 列表。
+
+    分隔符（逗号 / 空白 / 顿号 / 分号）在 URL 里也可能合法出现（如 query 里的逗号、
+    路径参数里的分号 ``;jsessionid=``），因此只在**拆开后每一段都是 http(s) 网址**时
+    才真拆；否则整串按单个 URL 处理，避免把合法地址切坏。
+    """
+    parts = [part for part in _URL_SPLIT_RE.split(value) if part]
+    if len(parts) > 1 and all(
+        part.strip().strip("<>\"'").lower().startswith(_HTTP_PREFIXES) for part in parts
+    ):
+        return parts
+    return [value]
 
 
 def _normalize_urls(raw: Any) -> tuple[list[str], str]:
     """把工具入参归一化成去重的 URL 列表。
 
+    入参可能是字符串、字符串列表，也可能是其它序列。三种形态统一收敛：列表 / 元组
+    的每个元素都按字符串处理（元素内部同样支持分隔符），避免 ``["https://a、https://b"]``
+    这种常见形态被整串当成一个地址送出去。
+
     Args:
-        raw: ``urls`` 参数；可能是字符串，也可能是字符串列表。
+        raw: ``urls`` 参数；可能是字符串，也可能是字符串序列。
 
     Returns:
         tuple[list[str], str]: ``(URL 列表, 错误信息)``。错误信息非空时列表为 ``[]``。
     """
-    if isinstance(raw, list):
-        candidates = [str(item) for item in raw]
+    if isinstance(raw, (list, tuple, set)):
+        items = [str(item) for item in raw]
     else:
-        candidates = _URL_SPLIT_RE.split(str(raw or ""))
+        items = [str(raw or "")]
+
+    candidates: list[str] = []
+    for item in items:
+        candidates.extend(_split_candidates(item))
 
     urls: list[str] = []
     for candidate in candidates:
@@ -50,9 +74,7 @@ def _normalize_urls(raw: Any) -> tuple[list[str], str]:
         return [], f"单次最多抓取 {MAX_EXTRACT_URLS} 个网址，当前收到 {len(urls)} 个。"
 
     # Tavily 只处理 http/https；先把非 http(s) 的入参拦下来，避免把无效地址送去消耗配额。
-    invalid = [
-        url for url in urls if not url.lower().startswith(("http://", "https://"))
-    ]
+    invalid = [url for url in urls if not url.lower().startswith(_HTTP_PREFIXES)]
     if invalid:
         shown = "、".join(invalid[:3])
         return [], f"只支持 http/https 网址，以下地址格式无效：{shown}"

@@ -17,10 +17,11 @@ _EXTRACT_URL = "https://api.tavily.com/extract"
 # 401 未授权 / 403 禁用 / 429 限流 / 432 Tavily 配额耗尽。
 _RETRYABLE_STATUSES: frozenset[int] = frozenset({401, 403, 429, 432})
 # 单次请求总超时（含连接、发送、读取响应体）。Tavily 无响应时避免请求无限挂起。
-# 该值必须大于服务端自身的提取上限，否则客户端会先放弃、白白丢掉已经开始计费的请求：
-# /extract 不传 timeout 时，服务端按 extract_depth 取默认值——basic 10 秒、advanced
-# 30 秒（官方 API 文档）。取 45 秒即覆盖 advanced 的 30 秒上限，再留出连接与传输余量。
-_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=45)
+# 两个端点分开取值：/search 通常 10 秒内返回，超时取小值以免单 Key 挂起就阻塞回复链路；
+# /extract 不传 timeout 时服务端按 extract_depth 取默认值——basic 10 秒、advanced 30 秒
+# （官方 API 文档），客户端超时必须大于该上限，否则会先放弃、白白丢掉已经开始计费的请求。
+_SEARCH_TIMEOUT = aiohttp.ClientTimeout(total=15)
+_EXTRACT_TIMEOUT = aiohttp.ClientTimeout(total=45)
 # 抽取到的错误说明最大长度：只给 LLM 侧足够短的稳定信息，避免把原始响应体堆进上下文。
 _MAX_ERROR_DETAIL = 120
 # 无法从响应体取到字段时的固定兜底文案（不包含原始响应体内容）。
@@ -109,16 +110,26 @@ class TavilyClient:
             self._index = (self._index + 1) % len(self._keys)
             return key
 
-    async def _post_json(self, url: str, payload: dict[str, object]) -> dict:
+    async def _post_json(
+        self,
+        url: str,
+        payload: dict[str, object],
+        timeout: aiohttp.ClientTimeout,
+    ) -> dict:
         """向 Tavily 端点 POST，返回 200 响应体。
 
         ``/search`` 与 ``/extract`` 共用同一套 Key 轮询与 failover 语义：凡
         ``_RETRYABLE_STATUSES`` 里的状态码、网络异常或超时，都视为「当前 Key 不可用」
         并换下一个 Key 重试；其余 HTTP 错误快速失败（重试也不会变好，白白多烧配额）。
 
+        错误文案只描述网络层事实（HTTP 码 / 异常原因），不带「搜索」「提取」等领域
+        前缀——领域前缀由 :meth:`search` / :meth:`extract` 的调用方补，避免出现
+        「Tavily 搜索失败：Tavily 搜索失败（HTTP 500）」这类重复前缀。
+
         Args:
             url: Tavily 端点 URL。
             payload: 请求体。
+            timeout: 该端点的总超时；两个端点的服务端耗时上限不同，必须分开传。
 
         Returns:
             dict: 解析后的 JSON 响应体。
@@ -129,9 +140,9 @@ class TavilyClient:
         if not self._keys:
             raise TavilySearchError("未配置 Tavily API Key。")
 
-        last_error: TavilySearchError | None = None
         # 一次调用复用一个 session，多 Key 重试也复用同一连接池。
-        async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
+        last_error: TavilySearchError | None = None
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             for _ in range(len(self._keys)):
                 key = await self._next_key()
                 headers = {
@@ -147,22 +158,18 @@ class TavilyClient:
                         reason = await _extract_error_detail(response)
                         if response.status in _RETRYABLE_STATUSES:
                             last_error = TavilySearchError(
-                                f"Tavily 请求失败（HTTP {response.status}）：{reason}"
+                                f"HTTP {response.status}：{reason}"
                             )
                             continue
-                        raise TavilySearchError(
-                            f"Tavily 请求失败（HTTP {response.status}）：{reason}"
-                        )
+                        raise TavilySearchError(f"HTTP {response.status}：{reason}")
                 except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                     # 网络异常 / 超时按「当前 Key 不可用」处理，换下一个 Key 重试。
-                    last_error = TavilySearchError(
-                        f"Tavily 请求失败（网络异常或超时）：{exc}"
-                    )
+                    last_error = TavilySearchError(f"网络异常或超时：{exc}")
                     continue
 
         if last_error is not None:
             raise last_error
-        raise TavilySearchError("Tavily 请求失败：所有配置的 Key 均已尝试但未成功。")
+        raise TavilySearchError("所有配置的 Key 均已尝试但未成功。")
 
     async def search(
         self,
@@ -189,7 +196,7 @@ class TavilyClient:
             "search_depth": search_depth,
             "include_favicon": True,
         }
-        data = await self._post_json(_SEARCH_URL, payload)
+        data = await self._post_json(_SEARCH_URL, payload, _SEARCH_TIMEOUT)
         return [
             {
                 "title": str(item.get("title") or ""),
@@ -232,7 +239,7 @@ class TavilyClient:
         if str(query or "").strip():
             payload["query"] = str(query).strip()
 
-        data = await self._post_json(_EXTRACT_URL, payload)
+        data = await self._post_json(_EXTRACT_URL, payload, _EXTRACT_TIMEOUT)
         results = [
             {
                 "url": str(item.get("url") or ""),
@@ -334,11 +341,13 @@ def format_extract_results(
             lines.append("")
 
     if failed:
-        # 截断到展示长度：URL 可能带很长的 query string，塞进上下文没有价值。
-        labels = [(item.get("url") or "(未知地址)")[:_MAX_URL_LABEL] for item in failed]
         lines.append(f"以下 {len(failed)} 个地址提取失败：")
-        for label in labels:
-            lines.append(f"- {label}")
+        for item in failed:
+            # 截断到展示长度：URL 可能带很长的 query string，塞进上下文没有价值。
+            label = (item.get("url") or "(未知地址)")[:_MAX_URL_LABEL]
+            # 带上服务端给的失败原因，模型才能区分「反爬 / 需登录」与「链接无效」。
+            reason = str(item.get("error") or "").strip()[:_MAX_ERROR_DETAIL]
+            lines.append(f"- {label}（{reason}）" if reason else f"- {label}")
         # 典型失败原因是站点反爬、需登录或链接失效；提示模型改走搜索而非反复重试。
         lines.append("（失败通常源于站点反爬、需登录或链接失效，可改用搜索获取信息）")
 

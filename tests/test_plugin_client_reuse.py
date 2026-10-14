@@ -465,3 +465,63 @@ def test_max_chars_zero_disables_truncation():
     plugin.config.search.max_chars_per_url = 0
 
     assert plugin._max_chars_per_url() == 0
+
+
+def test_extract_tool_accepts_exactly_max_urls():
+    """正好 20 条是契约允许的上限，必须通过；只有 21 条才拒绝。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    session = _ExtractSession([_FakeResponse(200, {"results": []})])
+
+    urls = [f"https://a{i}.com" for i in range(20)]
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        result = asyncio.run(plugin.handle_tavily_extract(urls=urls))
+
+    assert result["success"] is True
+    assert session.payloads[0]["urls"] == urls
+
+
+def test_normalize_urls_splits_merged_entries_inside_list():
+    """LLM 常把多个地址塞进数组的同一个元素里，元素内部也要切分。"""
+    module = _import_plugin_with_fake_sdk()
+
+    for raw in (
+        ["https://a.com、https://b.com"],
+        ["https://a.com,https://b.com"],
+        ["https://a.com\nhttps://b.com"],
+    ):
+        urls, error = module._normalize_urls(raw)
+        assert error == "", raw
+        assert urls == ["https://a.com", "https://b.com"], raw
+
+
+def test_normalize_urls_accepts_tuple():
+    """tuple 入参应被当成序列处理，而不是 str() 之后按分隔符切坏。"""
+    module = _import_plugin_with_fake_sdk()
+
+    urls, error = module._normalize_urls(("https://a.com", "https://b.com"))
+
+    assert error == ""
+    assert urls == ["https://a.com", "https://b.com"]
+
+
+def test_normalize_urls_keeps_single_url_with_commas_intact():
+    """合法 URL 自带逗号（query 参数）时不能被误切。"""
+    module = _import_plugin_with_fake_sdk()
+    url = "https://a.com/search?q=x,y&lang=zh"
+
+    urls, error = module._normalize_urls([url])
+
+    assert error == ""
+    assert urls == [url]
+
+
+def test_normalize_urls_splits_semicolon_separated_string():
+    """分号也应视为分隔符（LLM 有时用它并列多个地址）。"""
+    module = _import_plugin_with_fake_sdk()
+
+    urls, error = module._normalize_urls("https://a.com;https://b.com")
+
+    assert error == ""
+    assert urls == ["https://a.com", "https://b.com"]
