@@ -6,10 +6,13 @@ from unittest.mock import patch
 
 import pytest
 from tavily_client import (
+    MAX_EXTRACT_URLS,
     TavilyClient,
     TavilyClientCache,
     TavilySearchError,
     _extract_error_detail,
+    _REQUEST_TIMEOUT,
+    format_extract_results,
     format_results,
 )
 
@@ -290,3 +293,188 @@ def test_control_new_client_per_search_restarts_rotation():
         asyncio.run(run())
 
     assert session.calls == ["Bearer k1", "Bearer k1"]
+
+
+# ── /extract：正文提取 ──────────────────────────────
+
+
+class _RecordingSession(_FakeSession):
+    """额外记录最后一次请求体与 URL，用于断言 extract 的载荷形状。"""
+
+    def __init__(self, responses: list):
+        super().__init__(responses)
+        self.payloads: list[dict] = []
+        self.urls: list[str] = []
+
+    def post(self, url, json=None, headers=None):
+        self.urls.append(url)
+        self.payloads.append(json or {})
+        return super().post(url, json=json, headers=headers)
+
+
+def test_extract_success_and_failed_both_returned():
+    """HTTP 200 时成功与失败分别在两个数组里，二者都必须回传。"""
+    session = _RecordingSession(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "results": [
+                        {"url": "https://a.com", "raw_content": "# 标题\n正文甲"}
+                    ],
+                    "failed_results": [{"url": "https://b.com", "error": "timeout"}],
+                },
+            )
+        ]
+    )
+    client = TavilyClient(["k1"])
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        outcome = asyncio.run(client.extract(["https://a.com", "https://b.com"]))
+
+    assert outcome["results"][0]["raw_content"] == "# 标题\n正文甲"
+    assert outcome["failed"][0]["url"] == "https://b.com"
+    assert session.urls == ["https://api.tavily.com/extract"]
+
+
+def test_extract_omits_chunks_per_source_without_query():
+    """不给 query 时不得带 chunks_per_source（官方文档：该参数仅在有 query 时可用）。"""
+    session = _RecordingSession([_FakeResponse(200, {"results": []})])
+    client = TavilyClient(["k1"])
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        asyncio.run(client.extract(["https://a.com"]))
+
+    assert "query" not in session.payloads[0]
+    assert "chunks_per_source" not in session.payloads[0]
+
+
+def test_extract_passes_query_and_depth():
+    session = _RecordingSession([_FakeResponse(200, {"results": []})])
+    client = TavilyClient(["k1"])
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        asyncio.run(
+            client.extract(
+                ["https://a.com"],
+                extract_depth="advanced",
+                query="模型参数规模",
+            )
+        )
+
+    assert session.payloads[0]["extract_depth"] == "advanced"
+    assert session.payloads[0]["query"] == "模型参数规模"
+
+
+def test_extract_failover_to_next_key():
+    """extract 与 search 共用同一套 Key failover 语义。"""
+    session = _RecordingSession(
+        [
+            _FakeResponse(429, {}),
+            _FakeResponse(
+                200,
+                {"results": [{"url": "https://a.com", "raw_content": "ok"}]},
+            ),
+        ]
+    )
+    client = TavilyClient(["busy-key", "good-key"])
+    with patch("tavily_client.aiohttp.ClientSession", return_value=session):
+        outcome = asyncio.run(client.extract(["https://a.com"]))
+
+    assert session.calls == ["Bearer busy-key", "Bearer good-key"]
+    assert outcome["results"][0]["raw_content"] == "ok"
+
+
+def test_extract_no_keys_raises():
+    client = TavilyClient([])
+    with pytest.raises(TavilySearchError, match="未配置"):
+        asyncio.run(client.extract(["https://a.com"]))
+
+
+def test_extract_fails_fast_on_non_retryable_status():
+    session = _RecordingSession([_FakeResponse(400, {})])
+    client = TavilyClient(["k1", "k2"])
+    with (
+        patch("tavily_client.aiohttp.ClientSession", return_value=session),
+        pytest.raises(TavilySearchError, match="HTTP 400"),
+    ):
+        asyncio.run(client.extract(["https://a.com"]))
+    assert session.calls == ["Bearer k1"]
+
+
+# ── format_extract_results：截断与失败提示 ───────────
+
+
+def test_format_extract_truncates_long_content():
+    long_text = "段落。\n" * 500
+    text = format_extract_results(
+        [{"url": "https://a.com", "raw_content": long_text}],
+        [],
+        max_chars_per_url=200,
+    )
+    assert "已截断" in text
+    assert len(text) < len(long_text)
+
+
+def test_format_extract_no_truncation_when_disabled():
+    long_text = "x" * 300
+    text = format_extract_results(
+        [{"url": "https://a.com", "raw_content": long_text}],
+        [],
+        max_chars_per_url=0,
+    )
+    assert "已截断" not in text
+    assert "x" * 300 in text
+
+
+def test_format_extract_truncation_prefers_sentence_boundary():
+    """句末标点落在窗口后半段时，截断点取该句末，不把末句劈开。"""
+    sentence = "前文" * 15 + "。"  # 31 字符，句末标点位于窗口(50)后半段
+    content = sentence + "后续内容" * 50
+    text = format_extract_results(
+        [{"url": "https://a.com", "raw_content": content}],
+        [],
+        max_chars_per_url=50,
+    )
+    assert sentence in text.splitlines()
+
+
+def test_format_extract_truncation_ignores_early_boundary():
+    """句末标点落在窗口前半段时退回硬截断，避免为对齐句末白丢过半配额。"""
+    content = "短。" + "后文" * 100  # 句末标点在第 2 字符，远在窗口(50)前半段
+    text = format_extract_results(
+        [{"url": "https://a.com", "raw_content": content}],
+        [],
+        max_chars_per_url=50,
+    )
+    body = next(line for line in text.splitlines() if line.startswith("短。"))
+    assert len(body) == 50
+
+
+def test_format_extract_reports_failures_and_hint():
+    text = format_extract_results([], [{"url": "https://b.com", "error": "403"}], 100)
+    assert "https://b.com" in text
+    assert "提取失败" in text
+    assert "搜索" in text
+
+
+def test_format_extract_empty_results_and_failures():
+    assert format_extract_results([], [], 100) == "Tavily 没有返回任何提取结果。"
+
+
+def test_format_extract_handles_missing_content():
+    text = format_extract_results(
+        [{"url": "https://a.com", "raw_content": ""}], [], 100
+    )
+    assert "未返回正文内容" in text
+
+
+def test_max_extract_urls_matches_api_contract():
+    """单批上限对齐 /extract 的 1-20 契约，改错会静默丢 URL。"""
+    assert MAX_EXTRACT_URLS == 20
+
+
+def test_request_timeout_exceeds_server_side_extract_cap():
+    """客户端总超时必须大于服务端 advanced 提取的 30 秒上限（官方默认值）。
+
+    两者相等即等于客户端先放弃：请求已经在服务端跑起来并计费，却拿不回内容。
+    """
+    assert _REQUEST_TIMEOUT.total is not None
+    assert _REQUEST_TIMEOUT.total > 30

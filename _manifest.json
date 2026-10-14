@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "omsociety.tavily-search",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "name": "Tavily 网页搜索",
-  "description": "提供 tavily_search LLM 工具，调用 Tavily API 搜索网页，支持多 Key 轮询与来源引用显示",
+  "description": "提供 tavily_search 与 tavily_extract LLM 工具，调用 Tavily API 搜索网页、抓取指定网址正文，支持多 Key 轮询与来源引用显示",
   "author": {
     "name": "OMSociety",
     "url": "https://github.com/OMSociety"

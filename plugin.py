@@ -5,14 +5,58 @@
 """
 
 import logging
-from typing import Any, ClassVar
+import re
+from typing import Any, ClassVar, Literal
 
 from maibot_sdk import Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
-from .tavily_client import TavilyClientCache, format_results
+from .tavily_client import (
+    MAX_EXTRACT_URLS,
+    TavilyClientCache,
+    format_extract_results,
+    format_results,
+)
 
 logger = logging.getLogger(__name__)
+
+# URL 里的空白与分隔符：LLM 可能传数组，也可能把多个地址塞进一个字符串。
+_URL_SPLIT_RE = re.compile(r"[,\s，、]+")
+
+
+def _normalize_urls(raw: Any) -> tuple[list[str], str]:
+    """把工具入参归一化成去重的 URL 列表。
+
+    Args:
+        raw: ``urls`` 参数；可能是字符串，也可能是字符串列表。
+
+    Returns:
+        tuple[list[str], str]: ``(URL 列表, 错误信息)``。错误信息非空时列表为 ``[]``。
+    """
+    if isinstance(raw, list):
+        candidates = [str(item) for item in raw]
+    else:
+        candidates = _URL_SPLIT_RE.split(str(raw or ""))
+
+    urls: list[str] = []
+    for candidate in candidates:
+        url = candidate.strip().strip("<>\"'")
+        if url and url not in urls:
+            urls.append(url)
+
+    if not urls:
+        return [], "请提供至少一个要抓取的网址。"
+    if len(urls) > MAX_EXTRACT_URLS:
+        return [], f"单次最多抓取 {MAX_EXTRACT_URLS} 个网址，当前收到 {len(urls)} 个。"
+
+    # Tavily 只处理 http/https；先把非 http(s) 的入参拦下来，避免把无效地址送去消耗配额。
+    invalid = [
+        url for url in urls if not url.lower().startswith(("http://", "https://"))
+    ]
+    if invalid:
+        shown = "、".join(invalid[:3])
+        return [], f"只支持 http/https 网址，以下地址格式无效：{shown}"
+    return urls, ""
 
 
 # ============ 配置模型 ============
@@ -124,6 +168,42 @@ class SearchConfig(PluginConfigBase):
             },
         },
     )
+    extract_depth: Literal["basic", "advanced"] = Field(
+        default="basic",
+        description="网页正文提取深度，basic 或 advanced",
+        json_schema_extra={
+            "label": "提取深度",
+            "hint": "advanced 可提取表格与内嵌内容、成功率更高，代价是延迟与额度（约为 basic 的两倍）",
+            "i18n": {
+                "en-US": {
+                    "label": "Extract depth",
+                    "hint": "advanced also retrieves tables and embedded content with a higher success rate, at the cost of latency and credits (roughly twice basic)",
+                },
+                "ja-JP": {
+                    "label": "抽出の深さ",
+                    "hint": "advanced は表や埋め込みコンテンツも抽出でき成功率も上がりますが、遅延とクレジット消費（basic の約二倍）が増えます",
+                },
+            },
+        },
+    )
+    max_chars_per_url: int = Field(
+        default=6000,
+        description="每个网址返回正文的最大字符数，0 表示不截断",
+        json_schema_extra={
+            "label": "单页正文字数上限",
+            "hint": "超出部分会被截断，避免一次提取挤占上下文；0 表示不截断，1-499 按 500 处理",
+            "i18n": {
+                "en-US": {
+                    "label": "Max characters per page",
+                    "hint": "Excess content is truncated to keep one extraction from consuming the whole context; 0 means no truncation, and 1-499 is treated as 500",
+                },
+                "ja-JP": {
+                    "label": "ページごとの最大文字数",
+                    "hint": "超過分は切り詰められ、抽出がコンテキストを圧迫するのを防ぎます。0 は切り詰めなし、1-499 は 500 として扱われます",
+                },
+            },
+        },
+    )
 
 
 class TavilySearchConfig(PluginConfigBase):
@@ -171,6 +251,37 @@ class TavilySearchPlugin(MaiBotPlugin):
             for key in self.config.search.tavily_api_key
             if str(key).strip()
         ]
+
+    def _extract_depth(self, raw: Any) -> str:
+        """归一化提取深度：只接受 basic / advanced，非法值回落到配置值。
+
+        Args:
+            raw: 工具调用传来的 ``extract_depth``，可能缺失或为任意类型。
+
+        Returns:
+            str: ``"basic"`` 或 ``"advanced"``。
+        """
+        value = str(raw or "").strip().lower()
+        if value in {"basic", "advanced"}:
+            return value
+        # 配置文件可被手改，故配置值也过一遍校验，非法时兜底 basic。
+        configured = str(self.config.search.extract_depth or "").strip().lower()
+        return configured if configured in {"basic", "advanced"} else "basic"
+
+    def _max_chars_per_url(self) -> int:
+        """读取单页正文字数上限。
+
+        Returns:
+            int: 上限字符数；``0`` 表示不截断。配置非法时回落 6000；正数下限 500
+            （更小的值会让正文只剩零头），负数按 500 处理而不是当成「不截断」。
+        """
+        try:
+            value = int(self.config.search.max_chars_per_url)
+        except (TypeError, ValueError):
+            value = 6000
+        if value == 0:
+            return 0
+        return max(500, value)
 
     @Tool(
         "tavily_search",
@@ -232,6 +343,67 @@ class TavilySearchPlugin(MaiBotPlugin):
             return {"success": True, "content": "Tavily 没有返回任何搜索结果。"}
 
         content = format_results(results, self.config.search.show_source)
+        return {"success": True, "content": content}
+
+    @Tool(
+        "tavily_extract",
+        description=(
+            "抓取指定网址的网页正文（Markdown）。当你已经有明确的 URL、"
+            "需要该页面的完整内容而非搜索摘要时调用。"
+            "仅支持公开可访问的 http/https 页面。"
+        ),
+        brief_description="抓取指定网址的网页正文",
+        parameters=[
+            ToolParameterInfo(
+                name="urls",
+                param_type=ToolParamType.STRING,
+                description=(
+                    "要抓取的网址；可传单个 URL，也可传多个 URL"
+                    f"（用逗号或换行分隔，单次最多 {MAX_EXTRACT_URLS} 个）"
+                ),
+                required=True,
+            ),
+            ToolParameterInfo(
+                name="query",
+                param_type=ToolParamType.STRING,
+                description="你关心的具体问题；给出后只返回与该问题最相关的片段，而非整页",
+                required=False,
+            ),
+            ToolParameterInfo(
+                name="extract_depth",
+                param_type=ToolParamType.STRING,
+                description="提取深度，basic 或 advanced；默认取插件配置",
+                required=False,
+                enum_values=["basic", "advanced"],
+            ),
+        ],
+    )
+    async def handle_tavily_extract(self, urls: Any, **kwargs):
+        keys = self._keys()
+        if not keys:
+            return {
+                "success": False,
+                "message": "未配置 Tavily API Key，请在插件配置的「搜索设置」里填写（可填多个 Key 轮询）。",
+            }
+
+        url_list, error = _normalize_urls(urls)
+        if error:
+            return {"success": False, "message": error}
+
+        try:
+            outcome = await self._client_cache.get(keys).extract(
+                urls=url_list,
+                extract_depth=self._extract_depth(kwargs.get("extract_depth")),
+                query=str(kwargs.get("query") or ""),
+            )
+        except Exception as e:  # noqa: BLE001 - 外部 API 错误统一转 LLM 可读信息
+            return {"success": False, "message": f"Tavily 网页提取失败：{e}"}
+
+        content = format_extract_results(
+            outcome["results"],
+            outcome["failed"],
+            self._max_chars_per_url(),
+        )
         return {"success": True, "content": content}
 
 

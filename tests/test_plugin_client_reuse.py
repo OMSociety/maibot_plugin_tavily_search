@@ -79,9 +79,7 @@ def _import_plugin_with_fake_sdk():
     try:
         return importlib.import_module(f"{PACKAGE}.plugin")
     finally:
-        for name in [
-            n for n in list(sys.modules) if n.split(".")[0] in prefixes
-        ]:
+        for name in [n for n in list(sys.modules) if n.split(".")[0] in prefixes]:
             del sys.modules[name]
         sys.modules.update(saved)
 
@@ -123,7 +121,12 @@ class _FakeSession:
 def _make_plugin(module, keys):
     plugin = module.TavilySearchPlugin()
     plugin.config = SimpleNamespace(
-        search=SimpleNamespace(tavily_api_key=list(keys), show_source=False)
+        search=SimpleNamespace(
+            tavily_api_key=list(keys),
+            show_source=False,
+            extract_depth="basic",
+            max_chars_per_url=6000,
+        )
     )
     return plugin
 
@@ -241,3 +244,224 @@ def test_plugin_config_update_ignores_other_scopes():
         asyncio.run(run())
 
     assert session.calls == ["Bearer k1", "Bearer k2"]
+
+
+# ── tavily_extract 工具层 ────────────────────────────
+
+
+class _ExtractSession(_FakeSession):
+    """记录请求体，用于校验 extract 工具的入参归一化结果。"""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.payloads = []
+
+    def post(self, url, json=None, headers=None):
+        self.payloads.append(json or {})
+        return super().post(url, json=json, headers=headers)
+
+
+def test_extract_tool_returns_content_and_failures():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+
+    session = _ExtractSession(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "results": [{"url": "https://a.com", "raw_content": "正文甲"}],
+                    "failed_results": [{"url": "https://b.com", "error": "403"}],
+                },
+            )
+        ]
+    )
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        result = asyncio.run(
+            plugin.handle_tavily_extract(urls="https://a.com, https://b.com")
+        )
+
+    assert result["success"] is True
+    assert "正文甲" in result["content"]
+    assert "https://b.com" in result["content"]
+
+
+def test_extract_tool_splits_and_dedupes_string_urls():
+    """LLM 常把多个地址塞进一个字符串：逗号、中文顿号、空白都要能切，重复要去掉。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    session = _ExtractSession([_FakeResponse(200, {"results": []})])
+
+    async def run():
+        await plugin.handle_tavily_extract(
+            urls="https://a.com、https://b.com\nhttps://a.com"
+        )
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        asyncio.run(run())
+
+    assert session.payloads[0]["urls"] == ["https://a.com", "https://b.com"]
+
+
+def test_extract_tool_accepts_list_urls():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    session = _ExtractSession([_FakeResponse(200, {"results": []})])
+
+    async def run():
+        await plugin.handle_tavily_extract(urls=["https://a.com", "https://b.com"])
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        asyncio.run(run())
+
+    assert session.payloads[0]["urls"] == ["https://a.com", "https://b.com"]
+
+
+def test_extract_tool_rejects_non_http_urls_without_calling_api():
+    """非 http(s) 入参在本地拦下，不消耗配额也不发请求。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    session = _ExtractSession([])
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        result = asyncio.run(plugin.handle_tavily_extract(urls="file:///C:/secret.txt"))
+
+    assert result["success"] is False
+    assert "http" in result["message"]
+    assert session.payloads == []
+
+
+def test_extract_tool_rejects_empty_urls():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+
+    result = asyncio.run(plugin.handle_tavily_extract(urls="  "))
+
+    assert result["success"] is False
+    assert "至少一个" in result["message"]
+
+
+def test_extract_tool_rejects_too_many_urls():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+
+    urls = [f"https://a{i}.com" for i in range(21)]
+    result = asyncio.run(plugin.handle_tavily_extract(urls=urls))
+
+    assert result["success"] is False
+    assert "20" in result["message"]
+
+
+def test_extract_tool_without_keys_returns_hint():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, [])
+
+    result = asyncio.run(plugin.handle_tavily_extract(urls="https://a.com"))
+
+    assert result["success"] is False
+    assert "API Key" in result["message"]
+
+
+def test_extract_tool_falls_back_on_invalid_depth():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    session = _ExtractSession([_FakeResponse(200, {"results": []})])
+
+    async def run():
+        await plugin.handle_tavily_extract(urls="https://a.com", extract_depth="deep")
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        asyncio.run(run())
+
+    assert session.payloads[0]["extract_depth"] == "basic"
+
+
+def test_extract_tool_uses_config_depth():
+    """工具没传 depth 时必须取配置值，而不是硬编码 basic。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    plugin.config.search.extract_depth = "advanced"
+    session = _ExtractSession([_FakeResponse(200, {"results": []})])
+
+    async def run():
+        await plugin.handle_tavily_extract(urls="https://a.com")
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        asyncio.run(run())
+
+    assert session.payloads[0]["extract_depth"] == "advanced"
+
+
+def test_extract_tool_reports_api_failure():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    session = _ExtractSession([_FakeResponse(500, {})])
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        result = asyncio.run(plugin.handle_tavily_extract(urls="https://a.com"))
+
+    assert result["success"] is False
+    assert "提取失败" in result["message"]
+
+
+def test_extract_tool_truncates_per_configured_limit():
+    """配置的字符上限要真正落到输出上，而不是只在文档里写着。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    plugin.config.search.max_chars_per_url = 600
+    session = _ExtractSession(
+        [
+            _FakeResponse(
+                200,
+                {"results": [{"url": "https://a.com", "raw_content": "字" * 5000}]},
+            )
+        ]
+    )
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        result = asyncio.run(plugin.handle_tavily_extract(urls="https://a.com"))
+
+    body = next(
+        line for line in result["content"].splitlines() if line.startswith("字")
+    )
+    assert len(body) <= 600
+    assert "已截断" in result["content"]
+
+
+def test_extract_tool_invalid_max_chars_config_falls_back():
+    """配置被手改成非法值时不能抛异常穿透到工具层。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    plugin.config.search.max_chars_per_url = "not-a-number"
+    session = _ExtractSession(
+        [
+            _FakeResponse(
+                200,
+                {"results": [{"url": "https://a.com", "raw_content": "字" * 8000}]},
+            )
+        ]
+    )
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        result = asyncio.run(plugin.handle_tavily_extract(urls="https://a.com"))
+
+    assert result["success"] is True
+    assert "已截断" in result["content"]
+
+
+def test_max_chars_negative_is_not_treated_as_no_truncation():
+    """负数只能是配置笔误，0 才是「不截断」；负数按最小可用长度处理。"""
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    plugin.config.search.max_chars_per_url = -100
+
+    assert plugin._max_chars_per_url() == 500
+
+
+def test_max_chars_zero_disables_truncation():
+    module = _import_plugin_with_fake_sdk()
+    plugin = _make_plugin(module, ["k1"])
+    plugin.config.search.max_chars_per_url = 0
+
+    assert plugin._max_chars_per_url() == 0
