@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/OMSociety/maibot_plugin_tavily_search/main/logo.png" width="120" alt="Tavily Search Logo" />
-
-# Tavily 网页搜索
+<h1><img src="https://raw.githubusercontent.com/OMSociety/maibot_plugin_tavily_search/main/logo.png" width="192" alt="Tavily Search Logo"><br>Tavily 网页搜索</h1>
 
 **Tavily 网页搜索工具** —— 实时信息检索 · 指定网址正文提取 · 多 Key 轮询 · 来源引用 · 搜索深度可控
 
